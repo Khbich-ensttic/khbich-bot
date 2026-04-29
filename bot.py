@@ -101,18 +101,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     get_user_data(user_id) # initialize
     await update.message.reply_text(
-        "Welcome! Please send me one or multiple images. Once you're done, click the 'Create PDF' button."
+        "Welcome! Please send me one or multiple images.\n\n"
+        "💡 For BEST quality, send images as 'File' (Document) instead of Photos.\n"
+        "Once you're done, click the 'Create PDF' button."
     )
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     udata = get_user_data(user_id)
 
-    photo = update.message.photo[-1]
-    file = await photo.get_file()
+    if update.message.document:
+        file_id = update.message.document.file_id
+    else:
+        file_id = update.message.photo[-1].file_id
+        await update.message.reply_text("⚠️ Warning: You sent a compressed photo. For best quality, send images as 'File' (Document).")
+
+    file = await context.bot.get_file(file_id)
 
     temp_dir = tempfile.gettempdir()
-    img_path = os.path.join(temp_dir, f"{user_id}_{photo.file_id}.jpg")
+    img_path = os.path.join(temp_dir, f"{user_id}_{file_id}.jpg")
     await file.download_to_drive(img_path)
 
     udata['images'].append(img_path)
@@ -238,15 +245,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Generating PDF, please wait...")
 
     try:
-        image_list = []
-        for img_path in images:
-            image = Image.open(img_path).convert("RGB")
-            image_list.append(image)
+        def process_image(img_path):
+            img = Image.open(img_path)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            # Upscale if small to improve clarity
+            if img.width < 1000:
+                new_width = img.width * 2
+                new_height = img.height * 2
+                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            return img
+
+        def generate_images():
+            for img_path in images[1:]:
+                yield process_image(img_path)
+
+        first_image = process_image(images[0])
 
         temp_dir = tempfile.gettempdir()
         pdf_path = os.path.join(temp_dir, f"{user_id}_{pdf_name}")
         
-        image_list[0].save(pdf_path, save_all=True, append_images=image_list[1:])
+        first_image.save(
+            pdf_path, 
+            save_all=True, 
+            append_images=generate_images(),
+            resolution=300.0,
+            quality=95
+        )
         udata['pdf_path'] = pdf_path
 
         # Send the document back to user
@@ -293,7 +318,7 @@ def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_image))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
