@@ -1,0 +1,5 @@
+credentials.json
+khbich-bot-d05eb14297ff.json
+*.env
+__pycache__/
+*.pyc
