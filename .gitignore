@@ -3,3 +3,5 @@ khbich-bot-d05eb14297ff.json
 *.env
 __pycache__/
 *.pyc
+client_secret.json
+token.json

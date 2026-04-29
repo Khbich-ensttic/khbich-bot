@@ -2,7 +2,6 @@ import os
 import re
 import tempfile
 import logging
-import json
 from typing import Dict
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -16,7 +15,7 @@ from telegram.ext import (
 )
 from PIL import Image
 
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
@@ -48,18 +47,21 @@ def get_user_data(user_id: int) -> dict:
 
 # Google Drive API helpers
 def get_drive_service():
-    creds_json = os.getenv("GOOGLE_CREDENTIALS")
-    if not creds_json:
-        raise ValueError("GOOGLE_CREDENTIALS environment variable is not set.")
-    
-    try:
-        creds_dict = json.loads(creds_json)
-    except json.JSONDecodeError:
-        raise ValueError("GOOGLE_CREDENTIALS is not a valid JSON string.")
+    """
+    Authenticates using User OAuth instead of Service Account.
+    Expects token.json to be present in the working directory.
+    """
+    # For deployment platforms like Railway, you might inject the file contents 
+    # via environment variables and write it to disk at runtime if it doesn't exist.
+    token_json_env = os.getenv("TOKEN_JSON_CONTENT")
+    if token_json_env and not os.path.exists('token.json'):
+        with open('token.json', 'w') as f:
+            f.write(token_json_env)
 
-    creds = service_account.Credentials.from_service_account_info(
-        creds_dict, scopes=SCOPES
-    )
+    if not os.path.exists('token.json'):
+        raise ValueError("token.json not found. Run auth.py locally first, or set TOKEN_JSON_CONTENT environment variable.")
+
+    creds = Credentials.from_authorized_user_file('token.json', SCOPES)
     service = build('drive', 'v3', credentials=creds, cache_discovery=False)
     return service
 
@@ -69,7 +71,9 @@ def list_folders(service, folder_id):
         q=query, 
         fields="nextPageToken, files(id, name)", 
         pageSize=1000,
-        orderBy="folder, name"
+        orderBy="folder, name",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
     ).execute()
     return results.get('files', [])
 
@@ -79,7 +83,12 @@ def upload_file_to_drive(service, file_path, file_name, folder_id):
         'parents': [folder_id]
     }
     media = MediaFileUpload(file_path, mimetype='application/pdf', resumable=True)
-    file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    file = service.files().create(
+        body=file_metadata, 
+        media_body=media, 
+        fields='id',
+        supportsAllDrives=True
+    ).execute()
     return file.get('id')
 
 def sanitize_filename(filename):
@@ -184,7 +193,7 @@ async def show_drive_folder(query, udata):
         folders = list_folders(service, folder_id)
     except Exception as e:
         logger.error(f"Google Drive API error: {e}")
-        await query.edit_message_text("❌ Failed to access Google Drive. Make sure GOOGLE_CREDENTIALS is set correctly.")
+        await query.edit_message_text("❌ Failed to access Google Drive. Make sure token.json is valid.")
         return
 
     keyboard = []
