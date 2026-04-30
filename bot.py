@@ -6,7 +6,7 @@ import json
 from functools import wraps
 from typing import Dict
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -254,25 +254,33 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     keyboard = [
-        [InlineKeyboardButton("📄 Create PDF", callback_data="create_pdf_prompt")],
-        [InlineKeyboardButton("📂 Google Drive", callback_data="open_drive")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_pdf")]
+        [KeyboardButton("📄 Create PDF"), KeyboardButton("📂 Google Drive")],
+        [KeyboardButton("❌ Cancel")]
     ]
     
     if str(user_id) == str(ADMIN_ID):
         keyboard.append([
-            InlineKeyboardButton("👤 Add User", callback_data="admin_add_user"),
-            InlineKeyboardButton("📋 List Users", callback_data="admin_list_users")
+            KeyboardButton("👤 Add User"),
+            KeyboardButton("📋 List Users")
         ])
         keyboard.append([
-            InlineKeyboardButton("🗑️ Remove User", callback_data="admin_remove_user_menu")
+            KeyboardButton("🗑️ Remove User")
         ])
         
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     text = "🗂 **Main Menu**\nSelect an option below to continue:"
     
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+        try:
+            await update.callback_query.message.delete()
+        except:
+            pass
     else:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
@@ -493,14 +501,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         finally:
             cleanup_user_files(udata)
 
-async def show_drive_folder(query, udata):
+async def show_drive_folder(update_or_query, udata):
     folder_id = udata['current_folder_id']
     try:
         service = get_drive_service()
         folders = list_folders(service, folder_id)
     except Exception as e:
         logger.error(f"Google Drive API error: {e}")
-        await query.edit_message_text("❌ Failed to access Google Drive. Make sure token.json is valid.")
+        text = "❌ Failed to access Google Drive. Make sure token.json is valid."
+        if isinstance(update_or_query, Update):
+            await update_or_query.message.reply_text(text)
+        else:
+            await update_or_query.edit_message_text(text)
         return
 
     keyboard = []
@@ -517,10 +529,12 @@ async def show_drive_folder(query, udata):
         keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="nav_back")])
         
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        "Select a subfolder to navigate, or click 'Upload here':", 
-        reply_markup=reply_markup
-    )
+    text = "Select a subfolder to navigate, or click 'Upload here':"
+    
+    if isinstance(update_or_query, Update):
+        await update_or_query.message.reply_text(text, reply_markup=reply_markup)
+    else:
+        await update_or_query.edit_message_text(text, reply_markup=reply_markup)
 
 class AdminStateFilter(filters.MessageFilter):
     def filter(self, message):
@@ -587,11 +601,83 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     udata = get_user_data(user_id)
     state = udata.get('state')
+    text = update.message.text.strip()
+
+    # Main Menu Reply Keyboard Actions
+    if text == "📄 Create PDF":
+        udata['state'] = "WAITING_FOR_IMAGES"
+        keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
+        await update.message.reply_text(
+            "📸 Please send me the images you want to convert to PDF.\n\n"
+            "💡 For BEST quality, send images as 'File' (Document) instead of Photos.\n"
+            "Once you are done uploading, click the 'Create PDF' button below the images.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+        
+    elif text == "📂 Google Drive":
+        udata['folder_history'] = []
+        udata['current_folder_id'] = ROOT_FOLDER_ID
+        await show_drive_folder(update, udata)
+        return
+        
+    elif text == "❌ Cancel":
+        cleanup_user_files(udata)
+        await show_main_menu(update, context)
+        return
+        
+    elif str(user_id) == str(ADMIN_ID):
+        if text == "👤 Add User":
+            udata['state'] = "WAITING_FOR_USER_ID"
+            keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
+            await update.message.reply_text(
+                "👤 Please enter the Telegram ID of the user you want to add:", 
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+            
+        elif text == "📋 List Users":
+            keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
+            if not ALLOWED_USERS:
+                await update.message.reply_text("📝 Allowed users list is currently empty.", reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                sorted_users = sorted(ALLOWED_USERS.items(), key=lambda x: x[1].get("first_name", ""))
+                lines = []
+                for uid, info in sorted_users:
+                    first_name = info.get("first_name", "Unknown")
+                    username = info.get("username")
+                    
+                    if username:
+                        lines.append(f"• {first_name} (@{username}) - {uid}")
+                    else:
+                        lines.append(f"• {first_name} - {uid}")
+                        
+                users = "\n".join(lines)
+                await update.message.reply_text(f"📝 Allowed users:\n{users}", reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+            
+        elif text == "🗑️ Remove User":
+            if not ALLOWED_USERS:
+                keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
+                await update.message.reply_text("📝 No users to remove.", reply_markup=InlineKeyboardMarkup(keyboard))
+                return
+                
+            keyboard = []
+            for uid, info in sorted(ALLOWED_USERS.items(), key=lambda x: x[1].get("first_name", "")):
+                name = info.get("first_name", "Unknown")
+                keyboard.append([InlineKeyboardButton(f"🗑️ {name} ({uid})", callback_data=f"remove_user_{uid}")])
+            keyboard.append([InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")])
+            
+            await update.message.reply_text(
+                "Select a user to remove:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
 
     if state != "WAITING_FOR_PDF_NAME":
         return
 
-    name = update.message.text
+    name = text
     pdf_name = sanitize_filename(name)
     if not pdf_name.lower().endswith(".pdf"):
         pdf_name += ".pdf"
