@@ -39,7 +39,7 @@ SCOPES = ['https://www.googleapis.com/auth/drive']
 
 # User Access System
 USERS_FILE = "users.json"
-ALLOWED_USERS = set()
+ALLOWED_USERS = {}
 
 def load_users():
     global ALLOWED_USERS
@@ -47,13 +47,22 @@ def load_users():
         with open(USERS_FILE, "r") as f:
             try:
                 data = json.load(f)
-                ALLOWED_USERS = set(data.get("allowed_users", []))
+                users_data = data.get("allowed_users", [])
+                
+                # Check for old format (list of IDs) vs new format (dict)
+                if isinstance(users_data, list):
+                    # Migrate old list to dictionary format
+                    ALLOWED_USERS = {str(uid): {"username": None, "first_name": "Unknown"} for uid in users_data}
+                elif isinstance(users_data, dict):
+                    ALLOWED_USERS = users_data
+                else:
+                    ALLOWED_USERS = {}
             except json.JSONDecodeError:
-                ALLOWED_USERS = set()
+                ALLOWED_USERS = {}
 
 def save_users():
     with open(USERS_FILE, "w") as f:
-        json.dump({"allowed_users": list(ALLOWED_USERS)}, f)
+        json.dump({"allowed_users": ALLOWED_USERS}, f)
 
 load_users()
 
@@ -189,19 +198,38 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /add_user <user_id>")
         return
-    user_id = context.args[0]
-    ALLOWED_USERS.add(user_id)
+        
+    user_id = str(context.args[0])
+    
+    first_name = "Unknown"
+    username = None
+    
+    # Try to fetch user details using Telegram API
+    try:
+        chat = await context.bot.get_chat(user_id)
+        first_name = chat.first_name or "Unknown"
+        username = chat.username
+    except Exception as e:
+        logger.warning(f"Could not fetch user details for {user_id}: {e}")
+        
+    ALLOWED_USERS[user_id] = {
+        "username": username,
+        "first_name": first_name
+    }
+    
     save_users()
-    await update.message.reply_text(f"✅ User {user_id} added to allowed list.")
+    name_display = f"{first_name} (@{username})" if username else first_name
+    await update.message.reply_text(f"✅ User {name_display} ({user_id}) added to allowed list.")
 
 @admin_only
 async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /remove_user <user_id>")
         return
-    user_id = context.args[0]
+        
+    user_id = str(context.args[0])
     if user_id in ALLOWED_USERS:
-        ALLOWED_USERS.remove(user_id)
+        del ALLOWED_USERS[user_id]
         save_users()
         await update.message.reply_text(f"✅ User {user_id} removed from allowed list.")
     else:
@@ -212,7 +240,17 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not ALLOWED_USERS:
         await update.message.reply_text("📝 Allowed users list is currently empty.")
     else:
-        users = "\n".join([f"• {uid}" for uid in ALLOWED_USERS])
+        lines = []
+        for uid, info in ALLOWED_USERS.items():
+            first_name = info.get("first_name", "Unknown")
+            username = info.get("username")
+            
+            if username:
+                lines.append(f"• {first_name} (@{username}) - {uid}")
+            else:
+                lines.append(f"• {first_name} - {uid}")
+                
+        users = "\n".join(lines)
         await update.message.reply_text(f"📝 Allowed users:\n{users}")
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -332,7 +370,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not ALLOWED_USERS:
             await query.edit_message_text("📝 Allowed users list is currently empty.", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
-            users = "\n".join([f"• {uid}" for uid in ALLOWED_USERS])
+            lines = []
+            for uid, info in ALLOWED_USERS.items():
+                first_name = info.get("first_name", "Unknown")
+                username = info.get("username")
+                
+                if username:
+                    lines.append(f"• {first_name} (@{username}) - {uid}")
+                else:
+                    lines.append(f"• {first_name} - {uid}")
+                    
+            users = "\n".join(lines)
             await query.edit_message_text(f"📝 Allowed users:\n{users}", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
