@@ -240,7 +240,8 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @check_access
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    get_user_data(user_id) # initialize
+    udata = get_user_data(user_id) # initialize
+    cleanup_user_files(udata)
     await show_main_menu(update, context)
 
 @check_access
@@ -344,23 +345,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("📝 Please enter a name for the PDF file:")
 
     elif data == "cancel_pdf":
-        # Delete all temporarily stored images
         images = udata.get('images', [])
-        for img_path in images:
-            if os.path.exists(img_path):
-                try:
-                    os.remove(img_path)
-                except Exception as cleanup_e:
-                    logger.warning(f"Could not delete file {img_path}: {cleanup_e}")
-                    
-        # Reset user session entirely
-        udata['images'] = []
-        udata['pdf_path'] = None
-        udata['pdf_name'] = None
-        udata['state'] = None
-        
         if len(images) > 0:
             await query.answer("❌ Operation cancelled.")
+        cleanup_user_files(udata)
         await show_main_menu(update, context)
 
     elif data == "upload_drive_start":
@@ -369,7 +357,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_drive_folder(query, udata)
         
     elif data == "upload_drive_cancel":
-        await cleanup_pdf(udata)
+        cleanup_user_files(udata)
         await query.edit_message_text("❌ Upload cancelled. You can send new images to create another PDF.")
 
     elif data.startswith("nav_back"):
@@ -406,7 +394,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Upload error: {e}")
             await query.edit_message_text(f"❌ Failed to upload: {str(e)}")
         finally:
-            await cleanup_pdf(udata)
+            cleanup_user_files(udata)
 
 async def show_drive_folder(query, udata):
     folder_id = udata['current_folder_id']
@@ -513,9 +501,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_document(document=doc, filename=pdf_name)
 
         # Cleanup images
-        for img_path in images:
+        images_list = udata.get('images', [])
+        for img_path in images_list:
             if os.path.exists(img_path):
-                os.remove(img_path)
+                try:
+                    os.remove(img_path)
+                    logger.info(f"Deleted temp image: {img_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Could not delete file {img_path}: {cleanup_error}")
         udata['images'] = []
         udata['state'] = None
 
@@ -533,27 +526,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error generating PDF: {e}", exc_info=True)
         await update.message.reply_text("❌ Failed to generate PDF. Please send your images again.")
-        
-        # Cleanup temporary image files
-        for img_path in images:
-            if os.path.exists(img_path):
-                try:
-                    os.remove(img_path)
-                except Exception as cleanup_error:
-                    logger.warning(f"Could not delete file {img_path}: {cleanup_error}")
-                    
-        # Completely reset the user's session data
-        udata['images'] = []
-        udata['pdf_path'] = None
-        udata['pdf_name'] = None
-        udata['state'] = None
+        cleanup_user_files(udata)
 
-async def cleanup_pdf(udata):
+def cleanup_user_files(udata):
+    # Cleanup temporary image files
+    images = udata.get('images', [])
+    for img_path in images:
+        if os.path.exists(img_path):
+            try:
+                os.remove(img_path)
+                logger.info(f"Deleted temp image: {img_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"Could not delete file {img_path}: {cleanup_error}")
+                
+    # Cleanup generated PDF file
     pdf_path = udata.get('pdf_path')
     if pdf_path and os.path.exists(pdf_path):
-        os.remove(pdf_path)
+        try:
+            os.remove(pdf_path)
+            logger.info(f"Deleted temp PDF: {pdf_path}")
+        except Exception as cleanup_error:
+            logger.warning(f"Could not delete PDF {pdf_path}: {cleanup_error}")
+            
+    # Completely reset the user's session data
+    udata['images'] = []
     udata['pdf_path'] = None
     udata['pdf_name'] = None
+    udata['state'] = None
     udata['folder_history'] = []
     udata['current_folder_id'] = ROOT_FOLDER_ID
 
