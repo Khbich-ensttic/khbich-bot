@@ -466,31 +466,18 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         udata['state'] = "WAITING_FOR_PDF_NAME"
         await query.message.reply_text("📝 Please enter a name for the PDF file:")
 
-    elif data.startswith("upload_direct_"):
-        folder_key = data.replace("upload_direct_", "")
+    elif data.startswith("open_root_"):
+        folder_key = data.replace("open_root_", "")
         if folder_key not in FOLDERS:
             await query.edit_message_text("❌ Error: Invalid folder selection.")
             return
             
-        folder_id = FOLDERS[folder_key]
-        pdf_path = udata.get('pdf_path')
-        pdf_name = udata.get('pdf_name', 'document.pdf')
-        
-        if not pdf_path or not os.path.exists(pdf_path):
-            await query.edit_message_text("❌ Error: PDF file not found. It may have been deleted.")
-            return
-            
-        await query.edit_message_text(f"⏳ Uploading '{pdf_name}' to 📁 {folder_key}...")
-        
-        try:
-            service = get_drive_service()
-            upload_file_to_drive(service, pdf_path, pdf_name, folder_id)
-            await query.edit_message_text(f"✅ Successfully uploaded to {folder_key}!")
-        except Exception as e:
-            logger.error(f"Upload error: {e}")
-            await query.edit_message_text(f"❌ Failed to upload: {str(e)}")
-        finally:
-            cleanup_user_files(udata)
+        udata['folder_history'] = []
+        udata['current_folder_id'] = FOLDERS[folder_key]
+        udata['current_folder_name'] = folder_key
+        udata['folder_page'] = 0
+        await show_drive_folder(query, udata)
+        return
 
     elif data == "upload_drive_start":
         udata['folder_history'] = []
@@ -646,19 +633,19 @@ async def show_drive_folder(update_or_query, udata):
     else:
         path_str = folder_name
         
-    text = f"📂 Current Location: *{path_str}*\n\nSelect a subfolder or click 'Upload here':"
+    text = f"📂 Current Location: {path_str}\n\nSelect a subfolder or click 'Upload here':"
     if total_pages > 1:
         text += f"\n(Page {page + 1}/{total_pages})"
     
     if msg:
         try:
-            await msg.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+            await msg.edit_text(text, reply_markup=reply_markup)
         except:
             pass
     elif isinstance(update_or_query, Update):
-        await update_or_query.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        await update_or_query.message.reply_text(text, reply_markup=reply_markup)
     else:
-        await update_or_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        await update_or_query.edit_message_text(text, reply_markup=reply_markup)
 
 class AdminStateFilter(filters.MessageFilter):
     def filter(self, message):
@@ -872,13 +859,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Ask about Drive upload
         keyboard = [
-            [InlineKeyboardButton("📁 Khbich-ensttic", callback_data="upload_direct_Khbich-ensttic")],
-            [InlineKeyboardButton("📁 Khbich-exams", callback_data="upload_direct_Khbich-exams")],
+            [InlineKeyboardButton("📁 Khbich-ensttic", callback_data="open_root_Khbich-ensttic")],
+            [InlineKeyboardButton("📁 Khbich-exams", callback_data="open_root_Khbich-exams")],
             [InlineKeyboardButton("❌ Cancel", callback_data="upload_drive_cancel")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            "Select a folder to upload this file to:", 
+            "Select a Drive to navigate and upload this file:", 
             reply_markup=reply_markup
         )
 
