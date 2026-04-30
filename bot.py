@@ -70,7 +70,8 @@ def get_drive_service():
     return service
 
 def list_folders(service, folder_id):
-    query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    query = "mimeType='application/vnd.google-apps.folder'"
+    #query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
     folders = []
     page_token = None
     
