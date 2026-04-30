@@ -70,8 +70,6 @@ def get_drive_service():
     return service
 
 def list_folders(service, folder_id):
-
-    #query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
     query = f"'{folder_id}' in parents and (mimeType='application/vnd.google-apps.folder' or mimeType='application/vnd.google-apps.shortcut') and trashed=false"
     folders = []
     page_token = None
@@ -79,7 +77,7 @@ def list_folders(service, folder_id):
     while True:
         results = service.files().list(
             q=query, 
-            fields="nextPageToken, files(id, name)", 
+            fields="nextPageToken, files(id, name, mimeType, shortcutDetails)", 
             pageSize=1000,
             orderBy="folder, name",
             supportsAllDrives=True,
@@ -89,8 +87,15 @@ def list_folders(service, folder_id):
         ).execute()
         
         items = results.get('files', [])
-        if items:
-            folders.extend(items)
+        for item in items:
+            if item.get('mimeType') == 'application/vnd.google-apps.shortcut':
+                target_mime = item.get('shortcutDetails', {}).get('targetMimeType')
+                if target_mime == 'application/vnd.google-apps.folder':
+                    # Use the real folder ID instead of the shortcut ID
+                    item['id'] = item['shortcutDetails']['targetId']
+                    folders.append(item)
+            else:
+                folders.append(item)
             
         page_token = results.get('nextPageToken')
         if not page_token:
@@ -227,8 +232,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             udata['current_folder_id'] = ROOT_FOLDER_ID
             await show_drive_folder(query, udata)
 
-    elif data.startswith("nav_folder_"):
-        folder_id = data.replace("nav_folder_", "")
+    elif data.startswith("folder_"):
+        folder_id = data.split("_")[1]
         udata['folder_history'].append(udata['current_folder_id'])
         udata['current_folder_id'] = folder_id
         await show_drive_folder(query, udata)
@@ -267,7 +272,7 @@ async def show_drive_folder(query, udata):
     keyboard = []
     # Add folder buttons
     for folder in folders:
-        cb_data = f"nav_folder_{folder['id']}"
+        cb_data = f"folder_{folder['id']}"
         keyboard.append([InlineKeyboardButton(f"📁 {folder['name']}", callback_data=cb_data)])
     
     # Add "Upload here" button
