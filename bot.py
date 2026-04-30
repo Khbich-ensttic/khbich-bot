@@ -112,7 +112,10 @@ def get_user_data(user_id: int) -> dict:
             'pdf_path': None,
             'pdf_name': None,
             'folder_history': [],
-            'current_folder_id': ROOT_FOLDER_ID
+            'current_folder_id': ROOT_FOLDER_ID,
+            'current_folder_name': 'Khbich-ensttic',
+            'folder_page': 0,
+            'folder_cache': {}
         }
     return user_data_store[user_id]
 
@@ -391,6 +394,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "open_drive":
         udata['folder_history'] = []
         udata['current_folder_id'] = ROOT_FOLDER_ID
+        udata['current_folder_name'] = 'Khbich-ensttic'
+        udata['folder_page'] = 0
         await show_drive_folder(query, udata)
         return
 
@@ -490,25 +495,55 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "upload_drive_start":
         udata['folder_history'] = []
         udata['current_folder_id'] = ROOT_FOLDER_ID
+        udata['current_folder_name'] = 'Khbich-ensttic'
+        udata['folder_page'] = 0
         await show_drive_folder(query, udata)
         
     elif data == "upload_drive_cancel":
         cleanup_user_files(udata)
         await query.edit_message_text("❌ Upload cancelled. You can send new images to create another PDF.")
 
+    elif data == "drive_prev":
+        udata['folder_page'] = max(0, udata.get('folder_page', 0) - 1)
+        await show_drive_folder(query, udata)
+        
+    elif data == "drive_next":
+        udata['folder_page'] = udata.get('folder_page', 0) + 1
+        await show_drive_folder(query, udata)
+
     elif data.startswith("nav_back"):
-        if udata['folder_history']:
+        if udata.get('folder_history'):
             prev_folder = udata['folder_history'].pop()
-            udata['current_folder_id'] = prev_folder
+            udata['current_folder_id'] = prev_folder.get('id', ROOT_FOLDER_ID)
+            udata['current_folder_name'] = prev_folder.get('name', 'Khbich-ensttic')
+            udata['folder_page'] = prev_folder.get('page', 0)
             await show_drive_folder(query, udata)
         else:
             udata['current_folder_id'] = ROOT_FOLDER_ID
+            udata['current_folder_name'] = 'Khbich-ensttic'
+            udata['folder_page'] = 0
             await show_drive_folder(query, udata)
 
     elif data.startswith("folder_"):
         folder_id = data.replace("folder_", "").strip()
-        udata['folder_history'].append(udata['current_folder_id'])
+        
+        folder_name = "Unknown"
+        curr_id = udata.get('current_folder_id')
+        if curr_id in udata.get('folder_cache', {}):
+            for f in udata['folder_cache'][curr_id]:
+                if f['id'] == folder_id:
+                    folder_name = f['name']
+                    break
+                    
+        udata.setdefault('folder_history', []).append({
+            'id': curr_id,
+            'name': udata.get('current_folder_name', 'Khbich-ensttic'),
+            'page': udata.get('folder_page', 0)
+        })
+        
         udata['current_folder_id'] = folder_id
+        udata['current_folder_name'] = folder_name
+        udata['folder_page'] = 0
         await show_drive_folder(query, udata)
 
     elif data == "upload_here":
@@ -533,39 +568,97 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cleanup_user_files(udata)
 
 async def show_drive_folder(update_or_query, udata):
-    folder_id = udata['current_folder_id']
-    try:
-        service = get_drive_service()
-        folders = list_folders(service, folder_id)
-    except Exception as e:
-        logger.error(f"Google Drive API error: {e}")
-        text = "❌ Failed to access Google Drive. Make sure token.json is valid."
+    folder_id = udata.get('current_folder_id', ROOT_FOLDER_ID)
+    folder_name = udata.get('current_folder_name', 'Khbich-ensttic')
+    page = udata.get('folder_page', 0)
+    
+    if 'folder_cache' not in udata:
+        udata['folder_cache'] = {}
+        
+    msg = None
+    if folder_id in udata['folder_cache']:
+        folders = udata['folder_cache'][folder_id]
+    else:
         if isinstance(update_or_query, Update):
-            await update_or_query.message.reply_text(text)
+            msg = await update_or_query.message.reply_text(f"⏳ Loading folders in '{folder_name}'...")
         else:
-            await update_or_query.edit_message_text(text)
-        return
+            await update_or_query.edit_message_text(f"⏳ Loading folders in '{folder_name}'...")
+            msg = update_or_query.message
+            
+        try:
+            service = get_drive_service()
+            folders = list_folders(service, folder_id)
+            udata['folder_cache'][folder_id] = folders
+        except Exception as e:
+            logger.error(f"Google Drive API error: {e}")
+            text = "❌ Failed to access Google Drive. Make sure token.json is valid."
+            if msg:
+                try:
+                    await msg.edit_text(text)
+                except:
+                    pass
+            elif isinstance(update_or_query, Update):
+                await update_or_query.message.reply_text(text)
+            else:
+                await update_or_query.edit_message_text(text)
+            return
+
+    ITEMS_PER_PAGE = 5
+    total_pages = max(1, (len(folders) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+    if page >= total_pages:
+        page = total_pages - 1
+        udata['folder_page'] = page
+        
+    start_idx = page * ITEMS_PER_PAGE
+    end_idx = start_idx + ITEMS_PER_PAGE
+    page_folders = folders[start_idx:end_idx]
 
     keyboard = []
     # Add folder buttons
-    for folder in folders:
+    for folder in page_folders:
         cb_data = f"folder_{folder['id']}"
         keyboard.append([InlineKeyboardButton(f"📁 {folder['name']}", callback_data=cb_data)])
     
-    # Add "Upload here" button
+    # Pagination buttons
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data="drive_prev"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("Next ➡️", callback_data="drive_next"))
+    if nav_row:
+        keyboard.append(nav_row)
+
+    # Action buttons
     keyboard.append([InlineKeyboardButton("📤 Upload here", callback_data="upload_here")])
     
-    # Add "Back" button if not in root
-    if folder_id != ROOT_FOLDER_ID:
-        keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="nav_back")])
+    if udata.get('folder_history'):
+        keyboard.append([InlineKeyboardButton("🔙 Back to Parent", callback_data="nav_back")])
         
     reply_markup = InlineKeyboardMarkup(keyboard)
-    text = "Select a subfolder to navigate, or click 'Upload here':"
     
-    if isinstance(update_or_query, Update):
-        await update_or_query.message.reply_text(text, reply_markup=reply_markup)
+    # Create breadcrumbs
+    history_names = [item.get('name', 'Unknown') for item in udata.get('folder_history', [])]
+    if history_names:
+        if len(history_names) > 2:
+            path_str = "... / " + " / ".join(history_names[-2:]) + f" / {folder_name}"
+        else:
+            path_str = " / ".join(history_names) + f" / {folder_name}"
     else:
-        await update_or_query.edit_message_text(text, reply_markup=reply_markup)
+        path_str = folder_name
+        
+    text = f"📂 Current Location: *{path_str}*\n\nSelect a subfolder or click 'Upload here':"
+    if total_pages > 1:
+        text += f"\n(Page {page + 1}/{total_pages})"
+    
+    if msg:
+        try:
+            await msg.edit_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        except:
+            pass
+    elif isinstance(update_or_query, Update):
+        await update_or_query.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        await update_or_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
 class AdminStateFilter(filters.MessageFilter):
     def filter(self, message):
@@ -649,6 +742,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "📂 Google Drive":
         udata['folder_history'] = []
         udata['current_folder_id'] = ROOT_FOLDER_ID
+        udata['current_folder_name'] = 'Khbich-ensttic'
+        udata['folder_page'] = 0
         await show_drive_folder(update, udata)
         return
         
@@ -831,6 +926,8 @@ def cleanup_user_files(udata):
     udata['state'] = None
     udata['folder_history'] = []
     udata['current_folder_id'] = ROOT_FOLDER_ID
+    udata['current_folder_name'] = 'Khbich-ensttic'
+    udata['folder_page'] = 0
 
 async def post_init(application):
     await application.bot.set_my_commands([
