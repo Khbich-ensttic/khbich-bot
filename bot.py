@@ -2,6 +2,8 @@ import os
 import re
 import tempfile
 import logging
+import json
+from functools import wraps
 from typing import Dict
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -31,8 +33,59 @@ logger = logging.getLogger(__name__)
 
 # Constants
 TOKEN = os.getenv("TOKEN")
+ADMIN_ID = os.getenv("ADMIN_ID", "YOUR_ADMIN_ID_HERE")
 ROOT_FOLDER_ID = "1pFEXGM_O5fkFtfzc-yjJp4YXN9VYQlqY"
 SCOPES = ['https://www.googleapis.com/auth/drive']
+
+# User Access System
+USERS_FILE = "users.json"
+ALLOWED_USERS = set()
+
+def load_users():
+    global ALLOWED_USERS
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "r") as f:
+            try:
+                data = json.load(f)
+                ALLOWED_USERS = set(data.get("allowed_users", []))
+            except json.JSONDecodeError:
+                ALLOWED_USERS = set()
+
+def save_users():
+    with open(USERS_FILE, "w") as f:
+        json.dump({"allowed_users": list(ALLOWED_USERS)}, f)
+
+load_users()
+
+def check_access(func):
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user = update.effective_user
+        if not user:
+            return
+            
+        user_id = str(user.id)
+        if user_id != str(ADMIN_ID) and user_id not in ALLOWED_USERS:
+            if update.message:
+                await update.message.reply_text("⛔️ You are not authorized to use this bot.")
+            elif update.callback_query:
+                await update.callback_query.answer("⛔️ Not authorized.", show_alert=True)
+            return
+            
+        return await func(update, context, *args, **kwargs)
+    return wrapper
+
+def admin_only(func):
+    @wraps(func)
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user = update.effective_user
+        if not user or str(user.id) != str(ADMIN_ID):
+            if update.message:
+                await update.message.reply_text("⛔️ Admin command only.")
+            return
+            
+        return await func(update, context, *args, **kwargs)
+    return wrapper
 
 # In-memory storage for user data
 user_data_store: Dict[int, dict] = {}
@@ -131,6 +184,38 @@ def sanitize_filename(filename):
     clean_name = clean_name.strip()
     return clean_name if clean_name else "document"
 
+@admin_only
+async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /add_user <user_id>")
+        return
+    user_id = context.args[0]
+    ALLOWED_USERS.add(user_id)
+    save_users()
+    await update.message.reply_text(f"✅ User {user_id} added to allowed list.")
+
+@admin_only
+async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("Usage: /remove_user <user_id>")
+        return
+    user_id = context.args[0]
+    if user_id in ALLOWED_USERS:
+        ALLOWED_USERS.remove(user_id)
+        save_users()
+        await update.message.reply_text(f"✅ User {user_id} removed from allowed list.")
+    else:
+        await update.message.reply_text(f"⚠️ User {user_id} was not in the allowed list.")
+
+@admin_only
+async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not ALLOWED_USERS:
+        await update.message.reply_text("📝 Allowed users list is currently empty.")
+    else:
+        users = "\n".join([f"• {uid}" for uid in ALLOWED_USERS])
+        await update.message.reply_text(f"📝 Allowed users:\n{users}")
+
+@check_access
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     get_user_data(user_id) # initialize
@@ -140,6 +225,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Once you're done, click the 'Create PDF' button."
     )
 
+@check_access
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     udata = get_user_data(user_id)
@@ -187,6 +273,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
+@check_access
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -295,6 +382,7 @@ async def show_drive_folder(query, udata):
         reply_markup=reply_markup
     )
 
+@check_access
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     udata = get_user_data(user_id)
@@ -422,6 +510,9 @@ def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("add_user", add_user))
+    app.add_handler(CommandHandler("remove_user", remove_user))
+    app.add_handler(CommandHandler("list_users", list_users))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_image))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
