@@ -334,11 +334,29 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @check_access
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     
     user_id = query.from_user.id
     udata = get_user_data(user_id)
     data = query.data
+
+    # Admin actions access control
+    admin_callbacks = ["admin_add_user", "admin_list_users", "admin_remove_user_menu"]
+    if data in admin_callbacks or data.startswith("remove_user_"):
+        if str(user_id) != str(ADMIN_ID):
+            await query.answer("⛔️ Access denied. Admin only.", show_alert=True)
+            return
+
+    if data == "cancel_pdf":
+        images = udata.get('images', [])
+        if len(images) > 0:
+            await query.answer("❌ Operation cancelled.")
+        else:
+            await query.answer()
+        cleanup_user_files(udata)
+        await show_main_menu(update, context)
+        return
+
+    await query.answer()
 
     if data == "main_menu":
         udata['state'] = None
@@ -429,13 +447,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         udata['state'] = "WAITING_FOR_PDF_NAME"
         await query.message.reply_text("📝 Please enter a name for the PDF file:")
-
-    elif data == "cancel_pdf":
-        images = udata.get('images', [])
-        if len(images) > 0:
-            await query.answer("❌ Operation cancelled.")
-        cleanup_user_files(udata)
-        await show_main_menu(update, context)
 
     elif data == "upload_drive_start":
         udata['folder_history'] = []
