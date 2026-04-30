@@ -142,8 +142,13 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Append to the user's specific session list
     udata['images'].append(img_path)
 
-    # Generate the Create PDF button
-    keyboard = [[InlineKeyboardButton("📄 Create PDF", callback_data="create_pdf")]]
+    # Generate the Create PDF and Cancel buttons
+    keyboard = [
+        [
+            InlineKeyboardButton("📄 Create PDF", callback_data="create_pdf"),
+            InlineKeyboardButton("❌ Annuler", callback_data="cancel_pdf")
+        ]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     # Send confirmation message
@@ -167,6 +172,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         udata['state'] = "WAITING_FOR_PDF_NAME"
         await query.message.reply_text("📝 Please enter a name for the PDF file:")
+
+    elif data == "cancel_pdf":
+        # Delete all temporarily stored images
+        images = udata.get('images', [])
+        for img_path in images:
+            if os.path.exists(img_path):
+                try:
+                    os.remove(img_path)
+                except Exception as cleanup_e:
+                    logger.warning(f"Could not delete file {img_path}: {cleanup_e}")
+                    
+        # Reset user session entirely
+        udata['images'] = []
+        udata['pdf_path'] = None
+        udata['pdf_name'] = None
+        udata['state'] = None
+        
+        await query.edit_message_text("❌ Operation cancelled. You can start again by sending new images.")
 
     elif data == "upload_drive_start":
         udata['folder_history'] = []
