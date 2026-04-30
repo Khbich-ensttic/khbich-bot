@@ -37,6 +37,11 @@ ADMIN_ID = os.getenv("ADMIN_ID", "YOUR_ADMIN_ID_HERE")
 ROOT_FOLDER_ID = "1pFEXGM_O5fkFtfzc-yjJp4YXN9VYQlqY"
 SCOPES = ['https://www.googleapis.com/auth/drive']
 
+FOLDERS = {
+    "Khbich-ensttic": ROOT_FOLDER_ID,
+    "Khbich-exams": "1Zk_-aOP2OTlvLcZRMfuzsNRlAc6632HM"
+}
+
 # User Access System
 USERS_FILE = "users.json"
 ALLOWED_USERS = {}
@@ -456,6 +461,32 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         udata['state'] = "WAITING_FOR_PDF_NAME"
         await query.message.reply_text("📝 Please enter a name for the PDF file:")
 
+    elif data.startswith("upload_direct_"):
+        folder_key = data.replace("upload_direct_", "")
+        if folder_key not in FOLDERS:
+            await query.edit_message_text("❌ Error: Invalid folder selection.")
+            return
+            
+        folder_id = FOLDERS[folder_key]
+        pdf_path = udata.get('pdf_path')
+        pdf_name = udata.get('pdf_name', 'document.pdf')
+        
+        if not pdf_path or not os.path.exists(pdf_path):
+            await query.edit_message_text("❌ Error: PDF file not found. It may have been deleted.")
+            return
+            
+        await query.edit_message_text(f"⏳ Uploading '{pdf_name}' to 📁 {folder_key}...")
+        
+        try:
+            service = get_drive_service()
+            upload_file_to_drive(service, pdf_path, pdf_name, folder_id)
+            await query.edit_message_text(f"✅ Successfully uploaded to {folder_key}!")
+        except Exception as e:
+            logger.error(f"Upload error: {e}")
+            await query.edit_message_text(f"❌ Failed to upload: {str(e)}")
+        finally:
+            cleanup_user_files(udata)
+
     elif data == "upload_drive_start":
         udata['folder_history'] = []
         udata['current_folder_id'] = ROOT_FOLDER_ID
@@ -744,6 +775,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(pdf_path, "rb") as doc:
             await update.message.reply_document(document=doc, filename=pdf_name)
 
+        # Ask about Drive upload
+        keyboard = [
+            [InlineKeyboardButton("📁 Khbich-ensttic", callback_data="upload_direct_Khbich-ensttic")],
+            [InlineKeyboardButton("📁 Khbich-exams", callback_data="upload_direct_Khbich-exams")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="upload_drive_cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "Select a folder to upload this file to:", 
+            reply_markup=reply_markup
+        )
+
         # Cleanup images
         images_list = udata.get('images', [])
         for img_path in images_list:
@@ -755,17 +798,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.warning(f"Could not delete file {img_path}: {cleanup_error}")
         udata['images'] = []
         udata['state'] = None
-
-        # Ask about Drive upload
-        keyboard = [
-            [InlineKeyboardButton("✅ Yes, upload to Drive", callback_data="upload_drive_start")],
-            [InlineKeyboardButton("❌ No, thanks", callback_data="upload_drive_cancel")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            "Do you want to upload this file to Google Drive?", 
-            reply_markup=reply_markup
-        )
 
     except Exception as e:
         logger.error(f"Error generating PDF: {e}", exc_info=True)
