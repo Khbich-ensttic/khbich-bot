@@ -264,6 +264,9 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("👤 Add User", callback_data="admin_add_user"),
             InlineKeyboardButton("📋 List Users", callback_data="admin_list_users")
         ])
+        keyboard.append([
+            InlineKeyboardButton("🗑️ Remove User", callback_data="admin_remove_user_menu")
+        ])
         
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = "🗂 **Main Menu**\nSelect an option below to continue:"
@@ -338,6 +341,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "main_menu":
+        udata['state'] = None
+        udata['pending_user_id'] = None
         await show_main_menu(update, context)
         return
 
@@ -359,8 +364,42 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data == "admin_add_user":
+        udata['state'] = "WAITING_FOR_USER_ID"
         keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
-        await query.edit_message_text("Use the command: `/add_user <user_id>`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(
+            "👤 Please enter the Telegram ID of the user you want to add:", 
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    elif data == "admin_remove_user_menu":
+        if not ALLOWED_USERS:
+            keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
+            await query.edit_message_text("📝 No users to remove.", reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+            
+        keyboard = []
+        for uid, info in sorted(ALLOWED_USERS.items(), key=lambda x: x[1].get("first_name", "")):
+            name = info.get("first_name", "Unknown")
+            keyboard.append([InlineKeyboardButton(f"🗑️ {name} ({uid})", callback_data=f"remove_user_{uid}")])
+        keyboard.append([InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")])
+        
+        await query.edit_message_text(
+            "Select a user to remove:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+        
+    elif data.startswith("remove_user_"):
+        uid_to_remove = data.replace("remove_user_", "")
+        if uid_to_remove in ALLOWED_USERS:
+            del ALLOWED_USERS[uid_to_remove]
+            save_users()
+            keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
+            await query.edit_message_text(f"✅ User {uid_to_remove} removed.", reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
+            await query.edit_message_text("❌ User not found.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     elif data == "admin_list_users":
@@ -478,41 +517,59 @@ class AdminStateFilter(filters.MessageFilter):
         if str(user_id) != str(ADMIN_ID):
             return False
         udata = get_user_data(user_id)
-        return udata.get('state') == "WAITING_FOR_NAME"
+        return udata.get('state') in ["WAITING_FOR_USER_ID", "WAITING_FOR_NAME"]
 
 admin_state_filter = AdminStateFilter()
 
-async def handle_admin_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     udata = get_user_data(user_id)
+    state = udata.get('state')
     
-    name = update.message.text.strip()
+    text = update.message.text.strip()
     
-    if name.lower() == "cancel":
+    if text.lower() == "cancel":
         udata['state'] = None
         udata['pending_user_id'] = None
         await update.message.reply_text("❌ Operation cancelled.")
         return
         
-    if not name:
-        await update.message.reply_text("❌ Name cannot be empty. Send again or type 'cancel'.")
+    if state == "WAITING_FOR_USER_ID":
+        if not text.isdigit():
+            await update.message.reply_text("❌ Error: User ID must be numeric. Please try again or type 'cancel'.")
+            return
+            
+        if text in ALLOWED_USERS:
+            udata['state'] = None
+            await update.message.reply_text(f"⚠️ User {text} already exists.")
+            return
+            
+        udata['pending_user_id'] = text
+        udata['state'] = "WAITING_FOR_NAME"
+        await update.message.reply_text(f"✏️ Send the user name for ID {text}:")
         return
         
-    pending_user_id = udata.get('pending_user_id')
-    if not pending_user_id:
+    elif state == "WAITING_FOR_NAME":
+        if not text:
+            await update.message.reply_text("❌ Name cannot be empty. Send again or type 'cancel'.")
+            return
+            
+        pending_user_id = udata.get('pending_user_id')
+        if not pending_user_id:
+            udata['state'] = None
+            return
+            
+        ALLOWED_USERS[pending_user_id] = {
+            "first_name": text,
+            "username": None
+        }
+        save_users()
+        
         udata['state'] = None
-        return
+        udata['pending_user_id'] = None
         
-    ALLOWED_USERS[pending_user_id] = {
-        "first_name": name,
-        "username": None
-    }
-    save_users()
-    
-    udata['state'] = None
-    udata['pending_user_id'] = None
-    
-    await update.message.reply_text(f"✅ User {name} ({pending_user_id}) added successfully.")
+        await update.message.reply_text(f"✅ User {text} ({pending_user_id}) added successfully.")
+        return
 
 @check_access
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -667,7 +724,7 @@ def main():
     app.add_handler(CommandHandler("list_users", list_users))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_image))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.TEXT & admin_state_filter, handle_admin_name_input))
+    app.add_handler(MessageHandler(filters.TEXT & admin_state_filter, handle_admin_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     logger.info("Bot is running...")
