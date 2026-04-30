@@ -70,38 +70,45 @@ def get_drive_service():
     return service
 
 def list_folders(service, folder_id):
+    print(f"Navigating to folder: {folder_id}")
     query = f"'{folder_id}' in parents and (mimeType='application/vnd.google-apps.folder' or mimeType='application/vnd.google-apps.shortcut') and trashed=false"
     folders = []
     page_token = None
     
-    while True:
-        results = service.files().list(
-            q=query, 
-            fields="nextPageToken, files(id, name, mimeType, shortcutDetails)", 
-            pageSize=1000,
-            orderBy="folder, name",
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True,
-            corpora="allDrives",
-            pageToken=page_token
-        ).execute()
-        
-        items = results.get('files', [])
-        for item in items:
-            if item.get('mimeType') == 'application/vnd.google-apps.shortcut':
-                target_mime = item.get('shortcutDetails', {}).get('targetMimeType')
-                if target_mime == 'application/vnd.google-apps.folder':
-                    # Use the real folder ID instead of the shortcut ID
-                    item['id'] = item['shortcutDetails']['targetId']
+    try:
+        while True:
+            results = service.files().list(
+                q=query, 
+                fields="nextPageToken, files(id, name, mimeType, shortcutDetails)", 
+                pageSize=1000,
+                orderBy="folder, name",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+                corpora="allDrives",
+                pageToken=page_token
+            ).execute()
+            
+            items = results.get('files', [])
+            for item in items:
+                if item.get('mimeType') == 'application/vnd.google-apps.shortcut':
+                    target_mime = item.get('shortcutDetails', {}).get('targetMimeType')
+                    if target_mime == 'application/vnd.google-apps.folder':
+                        # Use the real folder ID instead of the shortcut ID
+                        item['id'] = item['shortcutDetails']['targetId']
+                        folders.append(item)
+                else:
                     folders.append(item)
-            else:
-                folders.append(item)
-            
-        page_token = results.get('nextPageToken')
-        if not page_token:
-            break
-            
-    logger.info(f"Retrieved {len(folders)} folders for parent ID: {folder_id}")
+                
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
+                
+        logger.info(f"Retrieved {len(folders)} folders for parent ID: {folder_id}")
+    except Exception as e:
+        logger.error(f"Error fetching folders for {folder_id}: {e}")
+        # Return empty list on permission or API failure instead of crashing
+        return []
+
     return folders
 
 def upload_file_to_drive(service, file_path, file_name, folder_id):
@@ -233,7 +240,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_drive_folder(query, udata)
 
     elif data.startswith("folder_"):
-        folder_id = data.split("_")[1]
+        folder_id = data.replace("folder_", "").strip()
         udata['folder_history'].append(udata['current_folder_id'])
         udata['current_folder_id'] = folder_id
         await show_drive_folder(query, udata)
