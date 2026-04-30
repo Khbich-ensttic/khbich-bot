@@ -113,7 +113,7 @@ def get_user_data(user_id: int) -> dict:
             'pdf_name': None,
             'folder_history': [],
             'current_folder_id': ROOT_FOLDER_ID,
-            'current_folder_name': 'Khbich-ensttic',
+            'current_folder_name': 'Drive',
             'folder_page': 0,
             'folder_cache': {}
         }
@@ -138,6 +138,14 @@ def get_drive_service():
     creds = Credentials.from_authorized_user_file('token.json', SCOPES)
     service = build('drive', 'v3', credentials=creds, cache_discovery=False)
     return service
+
+def get_folder_info(service, folder_id):
+    try:
+        folder = service.files().get(fileId=folder_id, fields="name", supportsAllDrives=True).execute()
+        return folder.get('name', 'Unknown Folder')
+    except Exception as e:
+        logger.error(f"Error fetching folder info for {folder_id}: {e}")
+        return "Unknown Folder"
 
 def list_folders(service, folder_id):
     print(f"Navigating to folder: {folder_id}")
@@ -392,11 +400,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data == "open_drive":
-        udata['folder_history'] = []
-        udata['current_folder_id'] = ROOT_FOLDER_ID
-        udata['current_folder_name'] = 'Khbich-ensttic'
-        udata['folder_page'] = 0
-        await show_drive_folder(query, udata)
+        keyboard = [
+            [InlineKeyboardButton("📁 Khbich-ensttic", callback_data="open_root_Khbich-ensttic")],
+            [InlineKeyboardButton("📁 Khbich-exams", callback_data="open_root_Khbich-exams")],
+            [InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "Select a Drive to browse:", 
+            reply_markup=reply_markup
+        )
         return
 
     elif data == "admin_add_user":
@@ -472,19 +485,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Error: Invalid folder selection.")
             return
             
+        folder_id = FOLDERS[folder_key]
+        
+        try:
+            service = get_drive_service()
+            folder_name = get_folder_info(service, folder_id)
+        except Exception:
+            folder_name = folder_key
+            
         udata['folder_history'] = []
-        udata['current_folder_id'] = FOLDERS[folder_key]
-        udata['current_folder_name'] = folder_key
+        udata['current_folder_id'] = folder_id
+        udata['current_folder_name'] = folder_name
         udata['folder_page'] = 0
         await show_drive_folder(query, udata)
         return
 
     elif data == "upload_drive_start":
-        udata['folder_history'] = []
-        udata['current_folder_id'] = ROOT_FOLDER_ID
-        udata['current_folder_name'] = 'Khbich-ensttic'
-        udata['folder_page'] = 0
-        await show_drive_folder(query, udata)
+        keyboard = [
+            [InlineKeyboardButton("📁 Khbich-ensttic", callback_data="open_root_Khbich-ensttic")],
+            [InlineKeyboardButton("📁 Khbich-exams", callback_data="open_root_Khbich-exams")],
+            [InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "Select a Drive to browse:", 
+            reply_markup=reply_markup
+        )
+        return
         
     elif data == "upload_drive_cancel":
         cleanup_user_files(udata)
@@ -502,29 +529,42 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if udata.get('folder_history'):
             prev_folder = udata['folder_history'].pop()
             udata['current_folder_id'] = prev_folder.get('id', ROOT_FOLDER_ID)
-            udata['current_folder_name'] = prev_folder.get('name', 'Khbich-ensttic')
+            udata['current_folder_name'] = prev_folder.get('name', 'Drive')
             udata['folder_page'] = prev_folder.get('page', 0)
             await show_drive_folder(query, udata)
         else:
-            udata['current_folder_id'] = ROOT_FOLDER_ID
-            udata['current_folder_name'] = 'Khbich-ensttic'
-            udata['folder_page'] = 0
-            await show_drive_folder(query, udata)
+            keyboard = [
+                [InlineKeyboardButton("📁 Khbich-ensttic", callback_data="open_root_Khbich-ensttic")],
+                [InlineKeyboardButton("📁 Khbich-exams", callback_data="open_root_Khbich-exams")],
+                [InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                "Select a Drive to browse:", 
+                reply_markup=reply_markup
+            )
 
     elif data.startswith("folder_"):
         folder_id = data.replace("folder_", "").strip()
         
-        folder_name = "Unknown"
+        folder_name = None
         curr_id = udata.get('current_folder_id')
         if curr_id in udata.get('folder_cache', {}):
             for f in udata['folder_cache'][curr_id]:
                 if f['id'] == folder_id:
                     folder_name = f['name']
                     break
-                    
+        
+        if not folder_name:
+            try:
+                service = get_drive_service()
+                folder_name = get_folder_info(service, folder_id)
+            except Exception:
+                folder_name = "Folder"
+                
         udata.setdefault('folder_history', []).append({
             'id': curr_id,
-            'name': udata.get('current_folder_name', 'Khbich-ensttic'),
+            'name': udata.get('current_folder_name', 'Drive'),
             'page': udata.get('folder_page', 0)
         })
         
@@ -556,7 +596,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_drive_folder(update_or_query, udata):
     folder_id = udata.get('current_folder_id', ROOT_FOLDER_ID)
-    folder_name = udata.get('current_folder_name', 'Khbich-ensttic')
+    folder_name = udata.get('current_folder_name', 'Drive')
     page = udata.get('folder_page', 0)
     
     if 'folder_cache' not in udata:
@@ -619,7 +659,10 @@ async def show_drive_folder(update_or_query, udata):
     keyboard.append([InlineKeyboardButton("📤 Upload here", callback_data="upload_here")])
     
     if udata.get('folder_history'):
-        keyboard.append([InlineKeyboardButton("🔙 Back to Parent", callback_data="nav_back")])
+        keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="nav_back")])
+    else:
+        # If at root, the back button goes to the Drive selection menu
+        keyboard.append([InlineKeyboardButton("⬅️ Back to Drive List", callback_data="open_drive")])
         
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -727,11 +770,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     elif text == "📂 Google Drive":
-        udata['folder_history'] = []
-        udata['current_folder_id'] = ROOT_FOLDER_ID
-        udata['current_folder_name'] = 'Khbich-ensttic'
-        udata['folder_page'] = 0
-        await show_drive_folder(update, udata)
+        keyboard = [
+            [InlineKeyboardButton("📁 Khbich-ensttic", callback_data="open_root_Khbich-ensttic")],
+            [InlineKeyboardButton("📁 Khbich-exams", callback_data="open_root_Khbich-exams")],
+            [InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "Select a Drive to browse:", 
+            reply_markup=reply_markup
+        )
         return
         
     elif text == "❌ Cancel":
@@ -913,7 +961,7 @@ def cleanup_user_files(udata):
     udata['state'] = None
     udata['folder_history'] = []
     udata['current_folder_id'] = ROOT_FOLDER_ID
-    udata['current_folder_name'] = 'Khbich-ensttic'
+    udata['current_folder_name'] = 'Drive'
     udata['folder_page'] = 0
 
 async def post_init(application):
