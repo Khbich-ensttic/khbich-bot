@@ -199,31 +199,24 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /add_user <user_id>")
         return
         
-    user_id = str(context.args[0])
+    user_id_str = context.args[0]
+    if not user_id_str.isdigit():
+        await update.message.reply_text("❌ Error: user_id must be numeric.")
+        return
+        
+    user_id = str(user_id_str)
     
     if user_id in ALLOWED_USERS:
         await update.message.reply_text("⚠️ User already exists.")
         return
-    
-    first_name = "Unknown"
-    username = None
-    
-    # Try to fetch user details using Telegram API
-    try:
-        chat = await context.bot.get_chat(user_id)
-        first_name = chat.first_name or "Unknown"
-        username = chat.username
-    except Exception as e:
-        logger.warning(f"Could not fetch user details for {user_id}: {e}")
         
-    ALLOWED_USERS[user_id] = {
-        "username": username,
-        "first_name": first_name
-    }
+    # Set state for the admin to enter the user's name
+    admin_id = update.message.from_user.id
+    udata = get_user_data(admin_id)
+    udata['state'] = "WAITING_FOR_NAME"
+    udata['pending_user_id'] = user_id
     
-    save_users()
-    name_display = f"{first_name} (@{username})" if username else first_name
-    await update.message.reply_text(f"✅ User {name_display} ({user_id}) added to allowed list.")
+    await update.message.reply_text(f"✏️ Send the user name for ID {user_id}:")
 
 @admin_only
 async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -479,12 +472,55 @@ async def show_drive_folder(query, udata):
         reply_markup=reply_markup
     )
 
+class AdminStateFilter(filters.MessageFilter):
+    def filter(self, message):
+        user_id = message.from_user.id
+        if str(user_id) != str(ADMIN_ID):
+            return False
+        udata = get_user_data(user_id)
+        return udata.get('state') == "WAITING_FOR_NAME"
+
+admin_state_filter = AdminStateFilter()
+
+async def handle_admin_name_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    udata = get_user_data(user_id)
+    
+    name = update.message.text.strip()
+    
+    if name.lower() == "cancel":
+        udata['state'] = None
+        udata['pending_user_id'] = None
+        await update.message.reply_text("❌ Operation cancelled.")
+        return
+        
+    if not name:
+        await update.message.reply_text("❌ Name cannot be empty. Send again or type 'cancel'.")
+        return
+        
+    pending_user_id = udata.get('pending_user_id')
+    if not pending_user_id:
+        udata['state'] = None
+        return
+        
+    ALLOWED_USERS[pending_user_id] = {
+        "first_name": name,
+        "username": None
+    }
+    save_users()
+    
+    udata['state'] = None
+    udata['pending_user_id'] = None
+    
+    await update.message.reply_text(f"✅ User {name} ({pending_user_id}) added successfully.")
+
 @check_access
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     udata = get_user_data(user_id)
+    state = udata.get('state')
 
-    if udata.get('state') != "WAITING_FOR_PDF_NAME":
+    if state != "WAITING_FOR_PDF_NAME":
         return
 
     name = update.message.text
@@ -631,6 +667,7 @@ def main():
     app.add_handler(CommandHandler("list_users", list_users))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_image))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(MessageHandler(filters.TEXT & admin_state_filter, handle_admin_name_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     logger.info("Bot is running...")
