@@ -71,15 +71,31 @@ def get_drive_service():
 
 def list_folders(service, folder_id):
     query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    results = service.files().list(
-        q=query, 
-        fields="nextPageToken, files(id, name)", 
-        pageSize=1000,
-        orderBy="folder, name",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True
-    ).execute()
-    return results.get('files', [])
+    folders = []
+    page_token = None
+    
+    while True:
+        results = service.files().list(
+            q=query, 
+            fields="nextPageToken, files(id, name)", 
+            pageSize=1000,
+            orderBy="folder, name",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+            corpora="allDrives",
+            pageToken=page_token
+        ).execute()
+        
+        items = results.get('files', [])
+        if items:
+            folders.extend(items)
+            
+        page_token = results.get('nextPageToken')
+        if not page_token:
+            break
+            
+    logger.info(f"Retrieved {len(folders)} folders for parent ID: {folder_id}")
+    return folders
 
 def upload_file_to_drive(service, file_path, file_name, folder_id):
     file_metadata = {
