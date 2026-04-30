@@ -14,6 +14,10 @@ from telegram.ext import (
     filters,
 )
 from PIL import Image
+from pillow_heif import register_heif_opener
+
+# Initialize HEIC support
+register_heif_opener()
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -114,6 +118,9 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.document:
         # User sent a file/document (Best quality)
         file_id = update.message.document.file_id
+        file_name = update.message.document.file_name or ""
+        if file_name.lower().endswith(('.heic', '.heif')):
+            await update.message.reply_text("📸 HEIC image detected — converted automatically.")
     elif update.message.photo:
         # User sent a compressed photo
         # update.message.photo is an array of different sizes; [-1] gets the highest resolution available
@@ -259,21 +266,39 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         def process_image(img_path):
-            img = Image.open(img_path)
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            # Upscale if small to improve clarity
-            if img.width < 1000:
-                new_width = img.width * 2
-                new_height = img.height * 2
-                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            return img
+            try:
+                img = Image.open(img_path)
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                # Upscale if small to improve clarity
+                if img.width < 1000:
+                    new_width = img.width * 2
+                    new_height = img.height * 2
+                    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                return img
+            except Exception as e:
+                logger.error(f"Failed to open image {img_path}: {e}")
+                return None
+
+        first_image = None
+        valid_images = []
+        
+        # Try finding a valid first image
+        for idx, img_path in enumerate(images):
+            img = process_image(img_path)
+            if img is not None:
+                first_image = img
+                valid_images = images[idx+1:]
+                break
+                
+        if first_image is None:
+            raise ValueError("All submitted images were invalid or failed to process.")
 
         def generate_images():
-            for img_path in images[1:]:
-                yield process_image(img_path)
-
-        first_image = process_image(images[0])
+            for img_path in valid_images:
+                img = process_image(img_path)
+                if img is not None:
+                    yield img
 
         temp_dir = tempfile.gettempdir()
         pdf_path = os.path.join(temp_dir, f"{user_id}_{pdf_name}")
