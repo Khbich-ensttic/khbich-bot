@@ -297,8 +297,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     except Exception as e:
-        logger.error(f"Error generating PDF: {e}")
-        await update.message.reply_text("❌ Failed to generate PDF.")
+        logger.error(f"Error generating PDF: {e}", exc_info=True)
+        await update.message.reply_text("❌ Failed to generate PDF. Please send your images again.")
+        
+        # Cleanup temporary image files
+        for img_path in images:
+            if os.path.exists(img_path):
+                try:
+                    os.remove(img_path)
+                except Exception as cleanup_error:
+                    logger.warning(f"Could not delete file {img_path}: {cleanup_error}")
+                    
+        # Completely reset the user's session data
+        udata['images'] = []
+        udata['pdf_path'] = None
+        udata['pdf_name'] = None
         udata['state'] = None
 
 async def cleanup_pdf(udata):
