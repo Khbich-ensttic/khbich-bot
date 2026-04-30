@@ -110,23 +110,36 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     udata = get_user_data(user_id)
 
+    # Detect if the input is an uncompressed document or a compressed photo
     if update.message.document:
+        # User sent a file/document (Best quality)
         file_id = update.message.document.file_id
-    else:
+    elif update.message.photo:
+        # User sent a compressed photo
+        # update.message.photo is an array of different sizes; [-1] gets the highest resolution available
         file_id = update.message.photo[-1].file_id
-        await update.message.reply_text("⚠️ Warning: You sent a compressed photo. For best quality, send images as 'File' (Document).")
+        await update.message.reply_text(
+            "⚠️ Warning: You sent a compressed photo. For best PDF quality, send your images as a 'File' (Document)."
+        )
+    else:
+        return
 
+    # Download the file from Telegram servers
     file = await context.bot.get_file(file_id)
 
+    # Save to a temporary directory with a unique filename
     temp_dir = tempfile.gettempdir()
     img_path = os.path.join(temp_dir, f"{user_id}_{file_id}.jpg")
     await file.download_to_drive(img_path)
 
+    # Append to the user's specific session list
     udata['images'].append(img_path)
 
+    # Generate the Create PDF button
     keyboard = [[InlineKeyboardButton("📄 Create PDF", callback_data="create_pdf")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
+    # Send confirmation message
     await update.message.reply_text(
         f"📸 Received image. Total images: {len(udata['images'])}",
         reply_markup=reply_markup
