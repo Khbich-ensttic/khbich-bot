@@ -201,6 +201,10 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     user_id = str(context.args[0])
     
+    if user_id in ALLOWED_USERS:
+        await update.message.reply_text("⚠️ User already exists.")
+        return
+    
     first_name = "Unknown"
     username = None
     
@@ -233,15 +237,16 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_users()
         await update.message.reply_text(f"✅ User {user_id} removed from allowed list.")
     else:
-        await update.message.reply_text(f"⚠️ User {user_id} was not in the allowed list.")
+        await update.message.reply_text("❌ User not found.")
 
 @admin_only
 async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not ALLOWED_USERS:
         await update.message.reply_text("📝 Allowed users list is currently empty.")
     else:
+        sorted_users = sorted(ALLOWED_USERS.items(), key=lambda x: x[1].get("first_name", ""))
         lines = []
-        for uid, info in ALLOWED_USERS.items():
+        for uid, info in sorted_users:
             first_name = info.get("first_name", "Unknown")
             username = info.get("username")
             
@@ -370,8 +375,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not ALLOWED_USERS:
             await query.edit_message_text("📝 Allowed users list is currently empty.", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
+            sorted_users = sorted(ALLOWED_USERS.items(), key=lambda x: x[1].get("first_name", ""))
             lines = []
-            for uid, info in ALLOWED_USERS.items():
+            for uid, info in sorted_users:
                 first_name = info.get("first_name", "Unknown")
                 username = info.get("username")
                 
