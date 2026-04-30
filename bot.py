@@ -6,7 +6,7 @@ import json
 from functools import wraps
 from typing import Dict
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -215,15 +215,33 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users = "\n".join([f"• {uid}" for uid in ALLOWED_USERS])
         await update.message.reply_text(f"📝 Allowed users:\n{users}")
 
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    keyboard = [
+        [InlineKeyboardButton("📄 Create PDF", callback_data="create_pdf_prompt")],
+        [InlineKeyboardButton("📂 Google Drive", callback_data="open_drive")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_pdf")]
+    ]
+    
+    if str(user_id) == str(ADMIN_ID):
+        keyboard.append([
+            InlineKeyboardButton("👤 Add User", callback_data="admin_add_user"),
+            InlineKeyboardButton("📋 List Users", callback_data="admin_list_users")
+        ])
+        
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    text = "🗂 **Main Menu**\nSelect an option below to continue:"
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+
 @check_access
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     get_user_data(user_id) # initialize
-    await update.message.reply_text(
-        "Welcome! Please send me one or multiple images.\n\n"
-        "💡 For BEST quality, send images as 'File' (Document) instead of Photos.\n"
-        "Once you're done, click the 'Create PDF' button."
-    )
+    await show_main_menu(update, context)
 
 @check_access
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -282,7 +300,42 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     udata = get_user_data(user_id)
     data = query.data
 
-    if data == "create_pdf":
+    if data == "main_menu":
+        await show_main_menu(update, context)
+        return
+
+    elif data == "create_pdf_prompt":
+        udata['state'] = "WAITING_FOR_IMAGES"
+        keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
+        await query.edit_message_text(
+            "📸 Please send me the images you want to convert to PDF.\n\n"
+            "💡 For BEST quality, send images as 'File' (Document) instead of Photos.\n"
+            "Once you are done uploading, click the 'Create PDF' button below the images.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+
+    elif data == "open_drive":
+        udata['folder_history'] = []
+        udata['current_folder_id'] = ROOT_FOLDER_ID
+        await show_drive_folder(query, udata)
+        return
+
+    elif data == "admin_add_user":
+        keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
+        await query.edit_message_text("Use the command: `/add_user <user_id>`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    elif data == "admin_list_users":
+        keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
+        if not ALLOWED_USERS:
+            await query.edit_message_text("📝 Allowed users list is currently empty.", reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            users = "\n".join([f"• {uid}" for uid in ALLOWED_USERS])
+            await query.edit_message_text(f"📝 Allowed users:\n{users}", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    elif data == "create_pdf":
         if not udata['images']:
             await query.message.reply_text("❌ No images found. Please send some images first.")
             return
@@ -306,7 +359,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         udata['pdf_name'] = None
         udata['state'] = None
         
-        await query.edit_message_text("❌ Operation cancelled. You can start again by sending new images.")
+        if len(images) > 0:
+            await query.answer("❌ Operation cancelled.")
+        await show_main_menu(update, context)
 
     elif data == "upload_drive_start":
         udata['folder_history'] = []
@@ -502,12 +557,20 @@ async def cleanup_pdf(udata):
     udata['folder_history'] = []
     udata['current_folder_id'] = ROOT_FOLDER_ID
 
+async def post_init(application):
+    await application.bot.set_my_commands([
+        BotCommand("start", "Show main menu"),
+        BotCommand("add_user", "Add an allowed user (Admin)"),
+        BotCommand("remove_user", "Remove an allowed user (Admin)"),
+        BotCommand("list_users", "List all allowed users (Admin)")
+    ])
+
 def main():
     if not TOKEN:
         logger.error("TOKEN environment variable is not set.")
         return
         
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("add_user", add_user))
