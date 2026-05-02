@@ -4,6 +4,7 @@ import tempfile
 import logging
 import json
 import mimetypes
+import hashlib
 from functools import wraps
 from typing import Dict
 
@@ -604,6 +605,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("folder_"):
         folder_id = data.replace("folder_", "").strip()
+        # Resolve short ID if mapping exists
+        folder_id = udata.get('id_map', {}).get(folder_id, folder_id)
         
         folder_name = None
         curr_id = udata.get('current_folder_id')
@@ -675,7 +678,7 @@ async def show_drive_folder(update_or_query, udata):
     msg = None
     folders = udata['folder_cache'].get(folder_id)
     
-    if not folders:
+    if folders is None:
         if isinstance(update_or_query, Update):
             msg = await update_or_query.message.reply_text(f"⏳ Loading folders in '{folder_name}'...")
         else:
@@ -684,6 +687,16 @@ async def show_drive_folder(update_or_query, udata):
             
         try:
             service = get_drive_service()
+            
+            # Resolve shortcut if necessary (e.g. for Khbich-contribution)
+            try:
+                f_info = service.files().get(fileId=folder_id, fields="mimeType, shortcutDetails", supportsAllDrives=True).execute()
+                if f_info.get('mimeType') == 'application/vnd.google-apps.shortcut':
+                    folder_id = f_info.get('shortcutDetails', {}).get('targetId', folder_id)
+                    udata['current_folder_id'] = folder_id
+            except Exception:
+                pass
+
             folders = list_folders(service, folder_id)
             if folders:
                 udata['folder_cache'][folder_id] = folders
@@ -714,7 +727,14 @@ async def show_drive_folder(update_or_query, udata):
     keyboard = []
     # Add folder buttons
     for folder in page_folders:
-        cb_data = f"folder_{folder['id']}"
+        f_id = folder['id']
+        # Telegram callback_data limit is 64 bytes. Hash long IDs.
+        if len(f_id) > 40:
+            short_id = hashlib.md5(f_id.encode()).hexdigest()[:16]
+            udata.setdefault('id_map', {})[short_id] = f_id
+            cb_data = f"folder_{short_id}"
+        else:
+            cb_data = f"folder_{f_id}"
         keyboard.append([InlineKeyboardButton(f"📁 {folder['name']}", callback_data=cb_data)])
     
     # Pagination buttons
