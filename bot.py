@@ -3,6 +3,7 @@ import re
 import tempfile
 import logging
 import json
+import mimetypes
 from functools import wraps
 from typing import Dict
 
@@ -39,55 +40,42 @@ SCOPES = ['https://www.googleapis.com/auth/drive']
 
 FOLDERS = {
     "Khbich-ensttic": ROOT_FOLDER_ID,
-    "Khbich-exams": "1Zk_-aOP2OTlvLcZRMfuzsNRlAc6632HM"
+    "Khbich-exams": "1Zk_-aOP2OTlvLcZRMfuzsNRlAc6632HM",
+    "Khbich-contribution": "1Opeox98_mc4IHOVROkwT-c1r27Nzt52LAUKhKE1OeKeNzRBhf_KOQ0LlHyUb9P-yUogw4yx8"
 }
 
 # User Access System
-USERS_FILE = "users.json"
-ALLOWED_USERS = {}
+MODERATORS_FILE = "moderators.json"
+MODERATORS = {}
 
 def load_users():
-    global ALLOWED_USERS
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "r") as f:
+    global MODERATORS
+    if os.path.exists(MODERATORS_FILE):
+        with open(MODERATORS_FILE, "r") as f:
             try:
                 data = json.load(f)
-                users_data = data.get("allowed_users", [])
+                users_data = data.get("moderators", [])
                 
                 # Check for old format (list of IDs) vs new format (dict)
                 if isinstance(users_data, list):
                     # Migrate old list to dictionary format
-                    ALLOWED_USERS = {str(uid): {"username": None, "first_name": "Unknown"} for uid in users_data}
+                    MODERATORS = {str(uid): {"username": None, "first_name": "Unknown"} for uid in users_data}
                 elif isinstance(users_data, dict):
-                    ALLOWED_USERS = users_data
+                    MODERATORS = users_data
                 else:
-                    ALLOWED_USERS = {}
+                    MODERATORS = {}
             except json.JSONDecodeError:
-                ALLOWED_USERS = {}
+                MODERATORS = {}
 
 def save_users():
-    with open(USERS_FILE, "w") as f:
-        json.dump({"allowed_users": ALLOWED_USERS}, f)
+    with open(MODERATORS_FILE, "w") as f:
+        json.dump({"moderators": MODERATORS}, f)
 
 load_users()
 
-def check_access(func):
-    @wraps(func)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        user = update.effective_user
-        if not user:
-            return
-            
-        user_id = str(user.id)
-        if user_id != str(ADMIN_ID) and user_id not in ALLOWED_USERS:
-            if update.message:
-                await update.message.reply_text("⛔️ You are not authorized to use this bot.")
-            elif update.callback_query:
-                await update.callback_query.answer("⛔️ Not authorized.", show_alert=True)
-            return
-            
-        return await func(update, context, *args, **kwargs)
-    return wrapper
+def is_admin_or_mod(user_id):
+    uid = str(user_id)
+    return uid == str(ADMIN_ID) or uid in MODERATORS
 
 def admin_only(func):
     @wraps(func)
@@ -112,8 +100,9 @@ def get_user_data(user_id: int) -> dict:
             'pdf_path': None,
             'pdf_name': None,
             'folder_history': [],
-            'current_folder_id': ROOT_FOLDER_ID,
-            'current_folder_name': 'Drive',
+            'current_folder_id': FOLDERS["Khbich-contribution"],
+            'current_folder_name': 'Khbich-contribution',
+            'root_folder_key': 'Khbich-contribution',
             'folder_page': 0,
             'folder_cache': {}
         }
@@ -190,11 +179,15 @@ def list_folders(service, folder_id):
     return folders
 
 def upload_file_to_drive(service, file_path, file_name, folder_id):
+    mime_type, _ = mimetypes.guess_type(file_name)
+    if not mime_type:
+        mime_type = 'application/octet-stream'
+        
     file_metadata = {
         'name': file_name,
         'parents': [folder_id]
     }
-    media = MediaFileUpload(file_path, mimetype='application/pdf', resumable=True)
+    media = MediaFileUpload(file_path, mimetype=mime_type, resumable=True)
     file = service.files().create(
         body=file_metadata, 
         media_body=media, 
@@ -209,6 +202,20 @@ def sanitize_filename(filename):
     clean_name = clean_name.strip()
     return clean_name if clean_name else "document"
 
+def get_drive_keyboard(user_id, cancel_callback="main_menu"):
+    keyboard = []
+    if is_admin_or_mod(user_id):
+        keyboard.append([InlineKeyboardButton("📁 Khbich-ensttic", callback_data="open_root_Khbich-ensttic")])
+        keyboard.append([InlineKeyboardButton("📁 Khbich-exams", callback_data="open_root_Khbich-exams")])
+        keyboard.append([InlineKeyboardButton("📁 Khbich-contribution", callback_data="open_root_Khbich-contribution")])
+    
+    if cancel_callback == "upload_drive_cancel":
+        keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data=cancel_callback)])
+    else:
+        keyboard.append([InlineKeyboardButton("⬅️ Back to Menu", callback_data=cancel_callback)])
+        
+    return InlineKeyboardMarkup(keyboard)
+
 @admin_only
 async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -222,8 +229,8 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     user_id = str(user_id_str)
     
-    if user_id in ALLOWED_USERS:
-        await update.message.reply_text("⚠️ User already exists.")
+    if user_id in MODERATORS:
+        await update.message.reply_text("⚠️ Moderator already exists.")
         return
         
     # Set state for the admin to enter the user's name
@@ -232,7 +239,7 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     udata['state'] = "WAITING_FOR_NAME"
     udata['pending_user_id'] = user_id
     
-    await update.message.reply_text(f"✏️ Send the user name for ID {user_id}:")
+    await update.message.reply_text(f"✏️ Send the moderator name for ID {user_id}:")
 
 @admin_only
 async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -241,19 +248,19 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     user_id = str(context.args[0])
-    if user_id in ALLOWED_USERS:
-        del ALLOWED_USERS[user_id]
+    if user_id in MODERATORS:
+        del MODERATORS[user_id]
         save_users()
-        await update.message.reply_text(f"✅ User {user_id} removed from allowed list.")
+        await update.message.reply_text(f"✅ Moderator {user_id} removed from allowed list.")
     else:
-        await update.message.reply_text("❌ User not found.")
+        await update.message.reply_text("❌ Moderator not found.")
 
 @admin_only
 async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not ALLOWED_USERS:
-        await update.message.reply_text("📝 Allowed users list is currently empty.")
+    if not MODERATORS:
+        await update.message.reply_text("📝 Moderators list is currently empty.")
     else:
-        sorted_users = sorted(ALLOWED_USERS.items(), key=lambda x: x[1].get("first_name", ""))
+        sorted_users = sorted(MODERATORS.items(), key=lambda x: x[1].get("first_name", ""))
         lines = []
         for uid, info in sorted_users:
             first_name = info.get("first_name", "Unknown")
@@ -265,7 +272,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"• {first_name} - {uid}")
                 
         users = "\n".join(lines)
-        await update.message.reply_text(f"📝 Allowed users:\n{users}")
+        await update.message.reply_text(f"📝 Moderators:\n{users}")
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -276,11 +283,11 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if str(user_id) == str(ADMIN_ID):
         keyboard.append([
-            KeyboardButton("👤 Add User"),
-            KeyboardButton("📋 List Users")
+            KeyboardButton("👤 Add Moderator"),
+            KeyboardButton("📋 List Moderators")
         ])
         keyboard.append([
-            KeyboardButton("🗑️ Remove User")
+            KeyboardButton("🗑️ Remove Moderator")
         ])
         
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -300,62 +307,90 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
-@check_access
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     udata = get_user_data(user_id) # initialize
     cleanup_user_files(udata)
     await show_main_menu(update, context)
 
-@check_access
-async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     udata = get_user_data(user_id)
 
-    # Detect if the input is an uncompressed document or a compressed photo
+    is_image = False
+    file_id = None
+    file_name = None
+
+    # Detect if the input is an uncompressed document, compressed photo, or video
     if update.message.document:
-        # User sent a file/document (Best quality)
         file_id = update.message.document.file_id
-        file_name = update.message.document.file_name or ""
-        if file_name.lower().endswith(('.heic', '.heif')):
-            await update.message.reply_text("📸 HEIC image detected — converted automatically.")
+        file_name = update.message.document.file_name or "document"
+        mime_type = update.message.document.mime_type or ""
+        
+        if mime_type.startswith('image/') or file_name.lower().endswith(('.jpg', '.jpeg', '.png', '.heic', '.heif', '.webp')):
+            is_image = True
+            if file_name.lower().endswith(('.heic', '.heif')):
+                await update.message.reply_text("📸 HEIC image detected — converted automatically.")
     elif update.message.photo:
         # User sent a compressed photo
-        # update.message.photo is an array of different sizes; [-1] gets the highest resolution available
         file_id = update.message.photo[-1].file_id
+        file_name = f"photo_{file_id}.jpg"
+        is_image = True
         await update.message.reply_text(
             "⚠️ Warning: You sent a compressed photo. For best PDF quality, send your images as a 'File' (Document)."
         )
+    elif update.message.video:
+        file_id = update.message.video.file_id
+        file_name = update.message.video.file_name or f"video_{file_id}.mp4"
     else:
         return
 
     # Download the file from Telegram servers
     file = await context.bot.get_file(file_id)
-
-    # Save to a temporary directory with a unique filename
     temp_dir = tempfile.gettempdir()
-    img_path = os.path.join(temp_dir, f"{user_id}_{file_id}.jpg")
-    await file.download_to_drive(img_path)
+    
+    # Safe filename for temp storage
+    safe_name = sanitize_filename(file_name)
+    file_path = os.path.join(temp_dir, f"{user_id}_{file_id}_{safe_name}")
+    await file.download_to_drive(file_path)
 
-    # Append to the user's specific session list
-    udata['images'].append(img_path)
+    if is_image:
+        # Append to the user's specific session list
+        udata['images'].append(file_path)
 
-    # Generate the Create PDF and Cancel buttons
-    keyboard = [
-        [
-            InlineKeyboardButton("📄 Create PDF", callback_data="create_pdf"),
-            InlineKeyboardButton("❌ Annuler", callback_data="cancel_pdf")
+        # Generate the Create PDF and Cancel buttons
+        keyboard = [
+            [
+                InlineKeyboardButton("📄 Create PDF", callback_data="create_pdf"),
+                InlineKeyboardButton("❌ Annuler", callback_data="cancel_pdf")
+            ]
         ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Send confirmation message
-    await update.message.reply_text(
-        f"📸 Received image. Total images: {len(udata['images'])}",
-        reply_markup=reply_markup
-    )
+        # Send confirmation message
+        await update.message.reply_text(
+            f"📸 Received image. Total images: {len(udata['images'])}",
+            reply_markup=reply_markup
+        )
+    else:
+        # Non-image file -> upload directly
+        udata['pdf_path'] = file_path
+        udata['pdf_name'] = file_name
+        
+        if not is_admin_or_mod(user_id):
+            udata['folder_history'] = []
+            udata['current_folder_id'] = FOLDERS['Khbich-contribution']
+            udata['current_folder_name'] = 'Khbich-contribution'
+            udata['root_folder_key'] = 'Khbich-contribution'
+            udata['folder_page'] = 0
+            await show_drive_folder(update, udata)
+        else:
+            reply_markup = get_drive_keyboard(user_id, cancel_callback="upload_drive_cancel")
+            await update.message.reply_text(
+                f"📎 Received '{file_name}'. Select a Drive to navigate and upload this file:", 
+                reply_markup=reply_markup
+            )
 
-@check_access
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     
@@ -400,63 +435,66 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     elif data == "open_drive":
-        keyboard = [
-            [InlineKeyboardButton("📁 Khbich-ensttic", callback_data="open_root_Khbich-ensttic")],
-            [InlineKeyboardButton("📁 Khbich-exams", callback_data="open_root_Khbich-exams")],
-            [InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
-            "Select a Drive to browse:", 
-            reply_markup=reply_markup
-        )
+        if not is_admin_or_mod(user_id):
+            udata['folder_history'] = []
+            udata['current_folder_id'] = FOLDERS['Khbich-contribution']
+            udata['current_folder_name'] = 'Khbich-contribution'
+            udata['root_folder_key'] = 'Khbich-contribution'
+            udata['folder_page'] = 0
+            await show_drive_folder(query, udata)
+        else:
+            reply_markup = get_drive_keyboard(user_id)
+            await query.edit_message_text(
+                "Select a Drive to browse:", 
+                reply_markup=reply_markup
+            )
         return
 
     elif data == "admin_add_user":
         udata['state'] = "WAITING_FOR_USER_ID"
         keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
         await query.edit_message_text(
-            "👤 Please enter the Telegram ID of the user you want to add:", 
+            "👤 Please enter the Telegram ID of the moderator you want to add:", 
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
 
     elif data == "admin_remove_user_menu":
-        if not ALLOWED_USERS:
+        if not MODERATORS:
             keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
-            await query.edit_message_text("📝 No users to remove.", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text("📝 No moderators to remove.", reply_markup=InlineKeyboardMarkup(keyboard))
             return
             
         keyboard = []
-        for uid, info in sorted(ALLOWED_USERS.items(), key=lambda x: x[1].get("first_name", "")):
+        for uid, info in sorted(MODERATORS.items(), key=lambda x: x[1].get("first_name", "")):
             name = info.get("first_name", "Unknown")
             keyboard.append([InlineKeyboardButton(f"🗑️ {name} ({uid})", callback_data=f"remove_user_{uid}")])
         keyboard.append([InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")])
         
         await query.edit_message_text(
-            "Select a user to remove:",
+            "Select a moderator to remove:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
         
     elif data.startswith("remove_user_"):
         uid_to_remove = data.replace("remove_user_", "")
-        if uid_to_remove in ALLOWED_USERS:
-            del ALLOWED_USERS[uid_to_remove]
+        if uid_to_remove in MODERATORS:
+            del MODERATORS[uid_to_remove]
             save_users()
             keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
-            await query.edit_message_text(f"✅ User {uid_to_remove} removed.", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text(f"✅ Moderator {uid_to_remove} removed.", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
             keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
-            await query.edit_message_text("❌ User not found.", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text("❌ Moderator not found.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     elif data == "admin_list_users":
         keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
-        if not ALLOWED_USERS:
-            await query.edit_message_text("📝 Allowed users list is currently empty.", reply_markup=InlineKeyboardMarkup(keyboard))
+        if not MODERATORS:
+            await query.edit_message_text("📝 Moderators list is currently empty.", reply_markup=InlineKeyboardMarkup(keyboard))
         else:
-            sorted_users = sorted(ALLOWED_USERS.items(), key=lambda x: x[1].get("first_name", ""))
+            sorted_users = sorted(MODERATORS.items(), key=lambda x: x[1].get("first_name", ""))
             lines = []
             for uid, info in sorted_users:
                 first_name = info.get("first_name", "Unknown")
@@ -468,7 +506,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     lines.append(f"• {first_name} - {uid}")
                     
             users = "\n".join(lines)
-            await query.edit_message_text(f"📝 Allowed users:\n{users}", reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text(f"📝 Moderators:\n{users}", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     elif data == "create_pdf":
@@ -485,6 +523,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Error: Invalid folder selection.")
             return
             
+        if not is_admin_or_mod(user_id) and folder_key != "Khbich-contribution":
+            await query.answer("⛔️ Access denied. Public users can only access Khbich-contribution.", show_alert=True)
+            return
+            
         folder_id = FOLDERS[folder_key]
         
         try:
@@ -496,26 +538,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         udata['folder_history'] = []
         udata['current_folder_id'] = folder_id
         udata['current_folder_name'] = folder_name
+        udata['root_folder_key'] = folder_key
         udata['folder_page'] = 0
         await show_drive_folder(query, udata)
         return
 
     elif data == "upload_drive_start":
-        keyboard = [
-            [InlineKeyboardButton("📁 Khbich-ensttic", callback_data="open_root_Khbich-ensttic")],
-            [InlineKeyboardButton("📁 Khbich-exams", callback_data="open_root_Khbich-exams")],
-            [InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
-            "Select a Drive to browse:", 
-            reply_markup=reply_markup
-        )
+        if not is_admin_or_mod(user_id):
+            udata['folder_history'] = []
+            udata['current_folder_id'] = FOLDERS['Khbich-contribution']
+            udata['current_folder_name'] = 'Khbich-contribution'
+            udata['root_folder_key'] = 'Khbich-contribution'
+            udata['folder_page'] = 0
+            await show_drive_folder(query, udata)
+        else:
+            reply_markup = get_drive_keyboard(user_id, cancel_callback="upload_drive_cancel")
+            await query.edit_message_text(
+                "Select a Drive to navigate and upload this file:", 
+                reply_markup=reply_markup
+            )
         return
         
     elif data == "upload_drive_cancel":
         cleanup_user_files(udata)
-        await query.edit_message_text("❌ Upload cancelled. You can send new images to create another PDF.")
+        await query.edit_message_text("❌ Upload cancelled.")
 
     elif data == "drive_prev":
         udata['folder_page'] = max(0, udata.get('folder_page', 0) - 1)
@@ -528,21 +574,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("nav_back"):
         if udata.get('folder_history'):
             prev_folder = udata['folder_history'].pop()
-            udata['current_folder_id'] = prev_folder.get('id', ROOT_FOLDER_ID)
+            udata['current_folder_id'] = prev_folder.get('id', FOLDERS["Khbich-contribution"])
             udata['current_folder_name'] = prev_folder.get('name', 'Drive')
             udata['folder_page'] = prev_folder.get('page', 0)
             await show_drive_folder(query, udata)
         else:
-            keyboard = [
-                [InlineKeyboardButton("📁 Khbich-ensttic", callback_data="open_root_Khbich-ensttic")],
-                [InlineKeyboardButton("📁 Khbich-exams", callback_data="open_root_Khbich-exams")],
-                [InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                "Select a Drive to browse:", 
-                reply_markup=reply_markup
-            )
+            if not is_admin_or_mod(user_id):
+                keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
+                await query.edit_message_text("You are at the root.", reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                reply_markup = get_drive_keyboard(user_id)
+                await query.edit_message_text(
+                    "Select a Drive to browse:", 
+                    reply_markup=reply_markup
+                )
 
     elif data.startswith("folder_"):
         folder_id = data.replace("folder_", "").strip()
@@ -556,6 +601,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     break
         
         if not folder_name:
+            if not is_admin_or_mod(user_id):
+                await query.answer("⛔️ Access denied.", show_alert=True)
+                return
             try:
                 service = get_drive_service()
                 folder_name = get_folder_info(service, folder_id)
@@ -574,12 +622,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_drive_folder(query, udata)
 
     elif data == "upload_here":
-        folder_id = udata.get('current_folder_id', ROOT_FOLDER_ID)
+        if not is_admin_or_mod(user_id) and udata.get('root_folder_key') != 'Khbich-contribution':
+            await query.answer("⛔️ Access denied. You can only upload to Khbich-contribution.", show_alert=True)
+            return
+            
+        folder_id = udata.get('current_folder_id', FOLDERS['Khbich-contribution'])
         pdf_path = udata.get('pdf_path')
         pdf_name = udata.get('pdf_name', 'document.pdf')
         
         if not pdf_path or not os.path.exists(pdf_path):
-            await query.edit_message_text("❌ Error: PDF file not found. It may have been deleted.")
+            await query.edit_message_text("❌ Error: File not found. It may have been deleted.")
             return
             
         await query.edit_message_text(f"⏳ Uploading '{pdf_name}' to Google Drive...")
@@ -595,7 +647,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cleanup_user_files(udata)
 
 async def show_drive_folder(update_or_query, udata):
-    folder_id = udata.get('current_folder_id', ROOT_FOLDER_ID)
+    if isinstance(update_or_query, Update):
+        user_id = update_or_query.effective_user.id
+    else:
+        user_id = update_or_query.from_user.id
+
+    folder_id = udata.get('current_folder_id', FOLDERS["Khbich-contribution"])
     folder_name = udata.get('current_folder_name', 'Drive')
     page = udata.get('folder_page', 0)
     
@@ -662,7 +719,15 @@ async def show_drive_folder(update_or_query, udata):
         keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data="nav_back")])
     else:
         # If at root, the back button goes to the Drive selection menu
-        keyboard.append([InlineKeyboardButton("⬅️ Back to Drive List", callback_data="open_drive")])
+        if not is_admin_or_mod(user_id):
+            if udata.get('pdf_path'):
+                keyboard.append([InlineKeyboardButton("❌ Cancel Upload", callback_data="upload_drive_cancel")])
+            else:
+                keyboard.append([InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")])
+        else:
+            keyboard.append([InlineKeyboardButton("⬅️ Back to Drive List", callback_data="open_drive")])
+            if udata.get('pdf_path'):
+                keyboard.append([InlineKeyboardButton("❌ Cancel Upload", callback_data="upload_drive_cancel")])
         
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -718,14 +783,14 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("❌ Error: User ID must be numeric. Please try again or type 'cancel'.")
             return
             
-        if text in ALLOWED_USERS:
+        if text in MODERATORS:
             udata['state'] = None
-            await update.message.reply_text(f"⚠️ User {text} already exists.")
+            await update.message.reply_text(f"⚠️ Moderator {text} already exists.")
             return
             
         udata['pending_user_id'] = text
         udata['state'] = "WAITING_FOR_NAME"
-        await update.message.reply_text(f"✏️ Send the user name for ID {text}:")
+        await update.message.reply_text(f"✏️ Send the moderator name for ID {text}:")
         return
         
     elif state == "WAITING_FOR_NAME":
@@ -738,7 +803,7 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
             udata['state'] = None
             return
             
-        ALLOWED_USERS[pending_user_id] = {
+        MODERATORS[pending_user_id] = {
             "first_name": text,
             "username": None
         }
@@ -747,10 +812,9 @@ async def handle_admin_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         udata['state'] = None
         udata['pending_user_id'] = None
         
-        await update.message.reply_text(f"✅ User {text} ({pending_user_id}) added successfully.")
+        await update.message.reply_text(f"✅ Moderator {text} ({pending_user_id}) added successfully.")
         return
 
-@check_access
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     udata = get_user_data(user_id)
@@ -770,16 +834,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     elif text == "📂 Google Drive":
-        keyboard = [
-            [InlineKeyboardButton("📁 Khbich-ensttic", callback_data="open_root_Khbich-ensttic")],
-            [InlineKeyboardButton("📁 Khbich-exams", callback_data="open_root_Khbich-exams")],
-            [InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            "Select a Drive to browse:", 
-            reply_markup=reply_markup
-        )
+        if not is_admin_or_mod(user_id):
+            udata['folder_history'] = []
+            udata['current_folder_id'] = FOLDERS['Khbich-contribution']
+            udata['current_folder_name'] = 'Khbich-contribution'
+            udata['root_folder_key'] = 'Khbich-contribution'
+            udata['folder_page'] = 0
+            await show_drive_folder(update, udata)
+        else:
+            reply_markup = get_drive_keyboard(user_id)
+            await update.message.reply_text(
+                "Select a Drive to browse:", 
+                reply_markup=reply_markup
+            )
         return
         
     elif text == "❌ Cancel":
@@ -788,21 +855,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     elif str(user_id) == str(ADMIN_ID):
-        if text == "👤 Add User":
+        if text == "👤 Add Moderator":
             udata['state'] = "WAITING_FOR_USER_ID"
             keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
             await update.message.reply_text(
-                "👤 Please enter the Telegram ID of the user you want to add:", 
+                "👤 Please enter the Telegram ID of the moderator you want to add:", 
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
             
-        elif text == "📋 List Users":
+        elif text == "📋 List Moderators":
             keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
-            if not ALLOWED_USERS:
-                await update.message.reply_text("📝 Allowed users list is currently empty.", reply_markup=InlineKeyboardMarkup(keyboard))
+            if not MODERATORS:
+                await update.message.reply_text("📝 Moderators list is currently empty.", reply_markup=InlineKeyboardMarkup(keyboard))
             else:
-                sorted_users = sorted(ALLOWED_USERS.items(), key=lambda x: x[1].get("first_name", ""))
+                sorted_users = sorted(MODERATORS.items(), key=lambda x: x[1].get("first_name", ""))
                 lines = []
                 for uid, info in sorted_users:
                     first_name = info.get("first_name", "Unknown")
@@ -814,23 +881,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         lines.append(f"• {first_name} - {uid}")
                         
                 users = "\n".join(lines)
-                await update.message.reply_text(f"📝 Allowed users:\n{users}", reply_markup=InlineKeyboardMarkup(keyboard))
+                await update.message.reply_text(f"📝 Moderators:\n{users}", reply_markup=InlineKeyboardMarkup(keyboard))
             return
             
-        elif text == "🗑️ Remove User":
-            if not ALLOWED_USERS:
+        elif text == "🗑️ Remove Moderator":
+            if not MODERATORS:
                 keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")]]
-                await update.message.reply_text("📝 No users to remove.", reply_markup=InlineKeyboardMarkup(keyboard))
+                await update.message.reply_text("📝 No moderators to remove.", reply_markup=InlineKeyboardMarkup(keyboard))
                 return
                 
             keyboard = []
-            for uid, info in sorted(ALLOWED_USERS.items(), key=lambda x: x[1].get("first_name", "")):
+            for uid, info in sorted(MODERATORS.items(), key=lambda x: x[1].get("first_name", "")):
                 name = info.get("first_name", "Unknown")
                 keyboard.append([InlineKeyboardButton(f"🗑️ {name} ({uid})", callback_data=f"remove_user_{uid}")])
             keyboard.append([InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu")])
             
             await update.message.reply_text(
-                "Select a user to remove:",
+                "Select a moderator to remove:",
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
@@ -906,16 +973,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_document(document=doc, filename=pdf_name)
 
         # Ask about Drive upload
-        keyboard = [
-            [InlineKeyboardButton("📁 Khbich-ensttic", callback_data="open_root_Khbich-ensttic")],
-            [InlineKeyboardButton("📁 Khbich-exams", callback_data="open_root_Khbich-exams")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="upload_drive_cancel")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            "Select a Drive to navigate and upload this file:", 
-            reply_markup=reply_markup
-        )
+        if not is_admin_or_mod(user_id):
+            udata['folder_history'] = []
+            udata['current_folder_id'] = FOLDERS['Khbich-contribution']
+            udata['current_folder_name'] = 'Khbich-contribution'
+            udata['root_folder_key'] = 'Khbich-contribution'
+            udata['folder_page'] = 0
+            await show_drive_folder(update, udata)
+        else:
+            reply_markup = get_drive_keyboard(user_id, cancel_callback="upload_drive_cancel")
+            await update.message.reply_text(
+                "Select a Drive to navigate and upload this file:", 
+                reply_markup=reply_markup
+            )
 
         # Cleanup images
         images_list = udata.get('images', [])
@@ -960,16 +1030,17 @@ def cleanup_user_files(udata):
     udata['pdf_name'] = None
     udata['state'] = None
     udata['folder_history'] = []
-    udata['current_folder_id'] = ROOT_FOLDER_ID
-    udata['current_folder_name'] = 'Drive'
+    udata['current_folder_id'] = FOLDERS["Khbich-contribution"]
+    udata['current_folder_name'] = 'Khbich-contribution'
+    udata['root_folder_key'] = 'Khbich-contribution'
     udata['folder_page'] = 0
 
 async def post_init(application):
     await application.bot.set_my_commands([
         BotCommand("start", "Show main menu"),
-        BotCommand("add_user", "Add an allowed user (Admin)"),
-        BotCommand("remove_user", "Remove an allowed user (Admin)"),
-        BotCommand("list_users", "List all allowed users (Admin)")
+        BotCommand("add_user", "Add a moderator (Admin)"),
+        BotCommand("remove_user", "Remove a moderator (Admin)"),
+        BotCommand("list_users", "List all moderators (Admin)")
     ])
 
 def main():
@@ -983,7 +1054,7 @@ def main():
     app.add_handler(CommandHandler("add_user", add_user))
     app.add_handler(CommandHandler("remove_user", remove_user))
     app.add_handler(CommandHandler("list_users", list_users))
-    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_image))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL | filters.VIDEO, handle_file))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & admin_state_filter, handle_admin_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
