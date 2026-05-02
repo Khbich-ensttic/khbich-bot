@@ -311,7 +311,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     udata = get_user_data(user_id) # initialize
     cleanup_user_files(udata)
-    await show_main_menu(update, context)
+    
+    keyboard = [[InlineKeyboardButton("🚀 Start", callback_data="start_menu")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "Welcome to the Khbich Bot! 📚\nClick the button below to get started.",
+        reply_markup=reply_markup
+    )
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -418,6 +425,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if data == "main_menu":
+        udata['state'] = None
+        udata['pending_user_id'] = None
+        await show_main_menu(update, context)
+        return
+
+    elif data == "start_menu":
         udata['state'] = None
         udata['pending_user_id'] = None
         await show_main_menu(update, context)
@@ -660,9 +673,9 @@ async def show_drive_folder(update_or_query, udata):
         udata['folder_cache'] = {}
         
     msg = None
-    if folder_id in udata['folder_cache']:
-        folders = udata['folder_cache'][folder_id]
-    else:
+    folders = udata['folder_cache'].get(folder_id)
+    
+    if not folders:
         if isinstance(update_or_query, Update):
             msg = await update_or_query.message.reply_text(f"⏳ Loading folders in '{folder_name}'...")
         else:
@@ -672,7 +685,8 @@ async def show_drive_folder(update_or_query, udata):
         try:
             service = get_drive_service()
             folders = list_folders(service, folder_id)
-            udata['folder_cache'][folder_id] = folders
+            if folders:
+                udata['folder_cache'][folder_id] = folders
         except Exception as e:
             logger.error(f"Google Drive API error: {e}")
             text = "❌ Failed to access Google Drive. Make sure token.json is valid."
@@ -741,9 +755,12 @@ async def show_drive_folder(update_or_query, udata):
     else:
         path_str = folder_name
         
-    text = f"📂 Current Location: {path_str}\n\nSelect a subfolder or click 'Upload here':"
-    if total_pages > 1:
-        text += f"\n(Page {page + 1}/{total_pages})"
+    if folders:
+        text = f"📂 Current Location: {path_str}\n\nSelect a subfolder or click 'Upload here':"
+        if total_pages > 1:
+            text += f"\n(Page {page + 1}/{total_pages})"
+    else:
+        text = f"📂 Current Location: {path_str}\n\n📂 This folder is empty"
     
     if msg:
         try:
